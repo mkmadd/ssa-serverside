@@ -7,16 +7,26 @@ Created on Wed Jan 14 10:29:04 2015
 
 import pyodbc
 from os import getenv
-import gdata.docs.client
-import re
 
-ROW_RE = re.compile('<span>(.*?)</span>')
-ALARM_TEMP_FILE = 'temp_alarm.txt' # temp file for alarm data
-INV_TEMP_FILE = 'temp_inv.txt' # temp file for inventory data
-ALARM_DOC_NAME = 'Alarm Data' # google docs name
-INV_DOC_NAME = 'Inventory Data' # google docs name
-username = getenv('GOOG_UID') # google/gmail login id
-passwd = getenv('GOOG_PWD') # google/gmail login password
+import httplib2
+import argparse
+
+from apiclient import discovery, errors
+import oauth2client
+from oauth2client import client
+from oauth2client import tools
+
+from apiclient.http import MediaFileUpload
+
+SCOPES = 'https://www.googleapis.com/auth/drive'
+CLIENT_SECRET_FILE = 'E:/projects/tests/client_secret.json'
+APPLICATION_NAME = 'Shortstop Dashboard'
+ALARM_FILE_ID = '1kQ9Bfs7S-hd_NiPTZa0JQLYWg0FNVNgGl-9yRe3fI0c'
+INV_FILE_ID = '1FfsSGg2XUExzPmggwvKSxRqG6sUnau7Ik53CSocKNjM'
+TEST_FILE_ID = '1Uc3m5SKkH_fJ52CN8Cso367158CgF7PsjA_8BSpF-cA'
+
+INV_TEMP_FILE = 'temp_inv.txt'
+ALARM_TEMP_FILE = 'temp_alarm.txt'
 
 # Parameters for SQL Server connection
 server = getenv('SSA_SERVER')
@@ -100,32 +110,81 @@ def get_todays_active_alarms():
     conn.close()
     
     return rows
+    
 
+def get_credentials():
+    """Gets valid user credentials from storage.
 
-def load_docs():
-    client = gdata.docs.client.DocsClient(source='shortstop-dash')
-    client.ssl = True
-    client.ClientLogin(username, passwd, client.source)
-    return client
+    If nothing has been stored, or if the stored credentials are invalid,
+    the OAuth2 flow is completed to obtain the new credentials.
 
+    Returns:
+        Credentials, the obtained credential.
+    """
+    store = oauth2client.file.Storage('shortstop-dash.json')
+    credentials = store.get()
 
-def update_doc(doc_name, temp_file):
-    client = load_docs()
-    doc_list = client.get_resources()
-    docs = []
-    for i in doc_list.entry:
-        docs.append(i.title.text)
-    doc_num = None
-    for i, j in enumerate(docs):
-        if j == doc_name:
-            doc_num = i
-    if doc_num == None:
-        return 0
-        
-    entry = doc_list.entry[doc_num]
-    media = gdata.data.MediaSource()
-    media.set_file_handle(temp_file, 'text/txt')
-    client.update_resource(entry, media=media, update_metadata=False)
+    if not credentials or credentials.invalid:
+        flow = client.flow_from_clientsecrets(CLIENT_SECRET_FILE, SCOPES)
+        flow.user_agent = APPLICATION_NAME
+        parser = argparse.ArgumentParser(parents=[tools.argparser])
+        flags = parser.parse_args()
+        credentials = tools.run_flow(flow, store, flags)
+        if not credentials:
+            print('Could not obtain valid credentials')
+
+    return credentials
+    
+
+def list_files():
+    """List all files in Drive account"""
+    credentials = get_credentials()
+    http = credentials.authorize(httplib2.Http())
+    service = discovery.build('drive', 'v2', http=http)
+
+    results = service.files().list().execute()
+    items = results.get('items', [])
+    for item in items:
+        print('{0} ({1})'.format(item['title'], item['id']))
+    
+
+def update_file(file_id, upload_file):
+    """Upload temp file upload_file to Google drive file file_id
+    
+    Google drive document file designated by file_id are updated with
+    the contents of text file designated by upload_file.
+    
+    Args:
+        file_id: String representing the Google Drive id of the file to 
+            be updated.
+        upload_file: String representing the name of the text file to be
+            uploaded to Google Drive
+    
+    Returns:
+        The new content of the updated Google Drive file.
+    """
+    credentials = get_credentials()
+    http = credentials.authorize(httplib2.Http())
+    service = discovery.build('drive', 'v2', http=http)
+
+    try:
+        file_meta = service.files().get(fileId=file_id).execute()
+
+        # File's new metadata.
+        file_meta['mimeType'] = 'text/plain'
+    
+        # File's new content.
+        media_body = MediaFileUpload(upload_file, mimetype='text/plain')
+    
+        # Send the request to the API.
+        updated_file = service.files().update(
+            fileId=file_id,
+            body=file_meta,
+            newRevision=False,
+            media_body=media_body).execute()
+        return updated_file
+    except errors.HttpError as error:
+        print('An error occurred: {}'.format(error))
     
 
 # Write rows to temporary file
@@ -137,16 +196,14 @@ def write_file(temp_file, rows):
 
 
 if __name__ == '__main__':
-    rows = get_latest_updates()   # Get data from SQL Server
-    write_file(INV_TEMP_FILE, rows)   # Write data to temp file
+    # Get inventory and alarm data from SQL Server and write data to temp files
+    rows = get_latest_updates()
+    write_file(INV_TEMP_FILE, rows)
     rows = get_todays_active_alarms()
     write_file(ALARM_TEMP_FILE, rows)
-    status = update_doc(INV_DOC_NAME, INV_TEMP_FILE)  # Copy temp file to Google Docs
-    status = update_doc(ALARM_DOC_NAME, ALARM_TEMP_FILE)
-    #status = retrieve_doc()
     
-    if status == 1:
-        print 'Success'
-    elif status == 0:
-        print 'Crushing failure!'
+    # Copy temp files to Google Docs
+#    update_file(INV_FILE_ID, INV_TEMP_FILE)
+#    update_file(ALARM_FILE_ID, ALARM_TEMP_FILE)
+    update_file(TEST_FILE_ID, INV_TEMP_FILE)
     
