@@ -1,1 +1,4 @@
 .spyderproject
+*.json
+temp_alarm.txt
+temp_inv.txt
